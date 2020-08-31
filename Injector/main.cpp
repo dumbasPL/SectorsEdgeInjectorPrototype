@@ -1,4 +1,6 @@
 #include <Windows.h>
+#include <tlhelp32.h>
+#include <tchar.h>
 //#include <metahost.h>
 #include "data.h"
 //#pragma comment(lib, "mscoree.lib")
@@ -111,14 +113,61 @@ int main() {
     const wchar_t fun[] = L"Main";
     memcpy_s((reinterpret_cast<BYTE*>(&d.fun) + 4), sizeof(d.fun) - 4, fun, sizeof(fun));
     *reinterpret_cast<DWORD*>(&d.fun) = sizeof(fun) - 2;
-    d.data = rawData;
+    //d.data = rawData;
     d.data_len = sizeof(rawData);
-    d.CLRCreateInstance = (f_CLRCreateInstance)GetProcAddress(LoadLibrary(TEXT("mscoree.dll")), "CLRCreateInstance");
+    HMODULE hMod = LoadLibrary(TEXT("mscoree.dll"));
+    if (!hMod) return 1;
+    d.CLRCreateInstance = (f_CLRCreateInstance)GetProcAddress(hMod, "CLRCreateInstance");
 
-    void* code = VirtualAlloc(NULL, sizeof(ida_chars), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    PROCESSENTRY32 entry;
+    entry.dwSize = sizeof(PROCESSENTRY32);
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
+
+    if (Process32First(snapshot, &entry) == TRUE)
+    {
+        while (Process32Next(snapshot, &entry) == TRUE)
+        {
+            if (_tcscmp(entry.szExeFile, TEXT("Game.exe")) == 0)
+            {
+                _tprintf(TEXT("process found as %d!\n"), entry.th32ProcessID);
+                HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, entry.th32ProcessID);
+                if (!hProcess) {
+                    _tprintf(TEXT("Failed to open process! %d\n"), GetLastError());
+                    break;
+                }
+
+                void* data = VirtualAllocEx(hProcess, NULL, sizeof(ida_chars) + sizeof(d) + sizeof(rawData), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+                if (!data) {
+                    _tprintf(TEXT("Failed to allocate memory! %d\n"), GetLastError());
+                    CloseHandle(hProcess);
+                    break;
+                }
+                _tprintf(TEXT("Memory allocated at %llX\n"), reinterpret_cast<unsigned long long>(data));
+                void* rdata = data;
+                void* idata = reinterpret_cast<void*>(reinterpret_cast<BYTE*>(data) + sizeof(rawData));
+                void* ldata = reinterpret_cast<void*>(reinterpret_cast<BYTE*>(idata) + sizeof(d));
+                WriteProcessMemory(hProcess, rdata, rawData, sizeof(rawData), NULL);
+                WriteProcessMemory(hProcess, ldata, ida_chars, sizeof(ida_chars), NULL);
+                d.data = rdata;
+                WriteProcessMemory(hProcess, idata, &d, sizeof(d), NULL);
+                HANDLE hThread = CreateRemoteThreadEx(hProcess, 0, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(ldata), idata, 0, 0, 0);
+                if (hThread) {
+                    WaitForSingleObject(hThread, 1000);
+                }
+                VirtualFreeEx(hProcess, data, 0, MEM_RELEASE);
+
+                CloseHandle(hProcess);
+            }
+        }
+    }
+
+    CloseHandle(snapshot);
+
+    /*void* code = VirtualAlloc(NULL, sizeof(ida_chars), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     memcpy(code, ida_chars, sizeof(ida_chars));
     typedef void(*f_inject)(ddd*);
-    ((f_inject)code)(&d);
+    ((f_inject)code)(&d);*/
 
     //inject(&d);
     system("pause");
